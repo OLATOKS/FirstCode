@@ -12,8 +12,8 @@ class Project:
         
     def RemoveTask(self,Tasks):
         self.TasksLists.remove(Tasks)
-#print("enter the name of the new obeject")
-#ProjectName = str(input())  
+print("enter the name of the new obeject")
+ProjectName = str(input())  
 ProjectName = Project("Tokunboh")
 ProjectName.AddMoreTask("go and eat , go and sleep , cleaning ")
 ProjectName.listTasks()
