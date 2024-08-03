@@ -26,5 +26,4 @@ if workans == 'yes':
     print("you will be given a random project to start with below!")
 randomprojects = random.choice(pyprojects)
 print("you are too work on", randomprojects,"now")   
-
 print(pyprojects)
