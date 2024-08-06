@@ -9,6 +9,7 @@ class Project :
     def AddMoreTasks(self,NewTasks):
         self.Tasks.append(NewTasks)
         
+<<<<<<< HEAD
 
     def RemoveTasks(self,NewTasks):
         self.Tasks.remove(NewTasks)
@@ -38,3 +39,12 @@ else:
 print(NewObject.Name)
 NewObject.DisplayTasks()
 
+=======
+    def RemoveTask(self,Tasks):
+        self.TasksLists.remove(Tasks)
+print("enter the name of the new obeject")
+ProjectName = str(input())  
+ProjectName = Project("Tokunboh")
+ProjectName.AddMoreTask("go and eat , go and sleep , cleaning ")
+ProjectName.listTasks()
+>>>>>>> 027305e62ac204b985d4b0a4254060e469c5c4a8
