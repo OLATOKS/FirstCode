@@ -7,8 +7,8 @@ class Project :
         print(self.Tasks)
     
     def AddMoreTasks(self,NewTasks):
-        self.Tasks.append(NewTasks
-
+        self.Tasks.append(NewTasks)
+        
     def RemoveTasks(self,NewTasks):
         self.Tasks.remove(NewTasks)
 
@@ -36,4 +36,3 @@ else:
     print(False)
 print(NewObject.Name)
 NewObject.DisplayTasks()
-
