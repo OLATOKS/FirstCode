@@ -1,0 +1,21 @@
+import tkinter as tk
+window1 = tk.Tk()
+window1.title("Second GUI")
+window1.geometry("400x400")
+entry1 = tk.Entry(window1, width=10,borderwidth= 8,)
+entry1.grid(row=3, column=0, columnspan=1)
+entry1.insert(0,"hey")
+textbox1 = tk.Text(window1, height=1, borderwidth=5, )
+textbox1.grid(row=2, column=0,columnspan=1)
+textbox1.insert(1.0,"type your life story here ")
+label1 = tk.Label(window1, text="YEAH A NEW WAY OF LEARNING", fg="blue" )
+label1.grid(row=0, column=0, columnspan=1)
+label2= tk.Label(window1, text = "SECOND WORD", fg="brown")
+label2.grid(row=0,column=1)
+#def names():
+    #label3 = tk.Label(window1, text="hello " + entry1.get())
+    #label3.grid(row=3, column=0)
+#button1 = tk.Button(window1,text="click here to print your name", )
+#button1.grid(row=3, column=1)
+
+window1.mainloop()
