@@ -29,7 +29,7 @@ def ClubName():
             if name and name not in Known:# avoid printing empty names.
                 TeamList.append(name)
                 Known.add(name)
-        
+         
         print("The teams are:")
         for name in TeamList:
             print("-", name)    
