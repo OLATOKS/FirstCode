@@ -20,6 +20,9 @@ _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 Text=pytesseract.image_to_string(gray, config="--psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 print("Text Detected:", Text.strip())
 
+with open("plate_number.txt","w") as file:
+    file.write(Text.strip())
+
 
 cv2.imshow("Area selected",AreaSelected)
 cv2.waitKey(0)
