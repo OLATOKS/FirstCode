@@ -205,7 +205,7 @@ async def airtime_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     await update.message.reply_text(
-        "💳 Airtime Purchase\n\n"
+        
         "Please select your bank:",
         reply_markup=reply_markup
     )
@@ -278,11 +278,7 @@ async def recipient_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_sessions.clear(user_id)
         
         await update.message.reply_text(
-            f"✅ Airtime Purchase Ready!\n\n"
-            f"Bank: {bank}\n"
-            f"Amount: ₦{amount}\n"
-            f"For: Yourself\n\n"
-            f"📱 USSD Code:\n"
+
             f"```\n{ussd_code}\n```\n"
             f"Copy and dial this code on your phone.",
             parse_mode="Markdown"
@@ -325,11 +321,7 @@ async def recipient_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions.clear(user_id)
     
     await update.message.reply_text(
-        f"✅ Airtime Purchase Ready!\n\n"
-        f"Bank: {bank}\n"
-        f"Amount: ₦{amount}\n"
-        f"Recipient: {phone}\n\n"
-        f"📱 USSD Code:\n"
+
         f"```\n{ussd_code}\n```\n"
         f"Copy and dial this code on your phone.",
         parse_mode="Markdown"
@@ -443,12 +435,7 @@ async def transfer_amount_received(update: Update, context: ContextTypes.DEFAULT
     user_sessions.clear(user_id)
     
     await update.message.reply_text(
-        f"✅ Money Transfer Ready!\n\n"
-        f"Bank: {bank}\n"
-        f"Type: {'Same Bank' if transfer_type == 'same_bank' else 'Other Bank'}\n"
-        f"Account: {account}\n"
-        f"Amount: ₦{amount}\n\n"
-        f"📱 USSD Code:\n"
+      
         f"```\n{ussd_code}\n```\n"
         f"Copy and dial this code on your phone.",
         parse_mode="Markdown"
