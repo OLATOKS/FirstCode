@@ -232,7 +232,7 @@ async def bank_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_sessions.set(user_id, "bank", bank_key)
     await update.message.reply_text(
-        f"Selected: {update.message.text}\n\n"
+        
         "How much airtime would you like to purchase?\n"
         "Example: 500, 1000, 2000"
     )
