@@ -1,9 +1,10 @@
 import re
 import os 
+import json 
 import logging
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup,ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
@@ -34,7 +35,39 @@ BankUssdTransfercode = {
 }
 
 BANK_SELECTION, AMOUNT_INPUT, RECIPIENT_CHOICE, RECIPIENT_PHONE, \
-TRANSFER_TYPE, ACCOUNT_NUMBER, TRANSFER_AMOUNT, DESTINATION_BANK = range(8)
+TRANSFER_TYPE, ACCOUNT_NUMBER, TRANSFER_AMOUNT, \
+CONFIRM_SAVE, GET_BENEFICIARY_NAME, SHORTCUT_AMOUNT = range(10)
+
+# CLICKABLE LINK HELPER ---
+def make_ussd_link(ussd):
+    """Formats USSD as a clickable phone link"""
+    return f"tel:{ussd}"
+
+# BENEFICIARY STORAGE 
+class BeneficiaryManager:
+    def __init__(self, filename="beneficiaries.json"):
+        self.filename = filename
+        if not os.path.exists(self.filename):
+            with open(self.filename, 'w') as f: json.dump({}, f)
+
+    def save(self, user_id, name, data):
+        all_data = self.load_all()
+        u_id = str(user_id)
+        if u_id not in all_data: all_data[u_id] = {}
+        all_data[u_id][name.lower()] = data
+        with open(self.filename, 'w') as f:
+            json.dump(all_data, f, indent=4)
+
+    def load_all(self):
+        try:
+            with open(self.filename, 'r') as f: return json.load(f)
+        except: return {}
+
+    def get_user_list(self, user_id):
+        return self.load_all().get(str(user_id), {})
+
+beneficiary_mgr = BeneficiaryManager()
+
 
 class UserSession:
     def __init__(self):
@@ -140,7 +173,22 @@ except Exception as e:
     print(f"⚠️ Could not initialize AI: {e}")
     chatbot_chain = None
 
+ # REUSABLE FINAL STEP (The "Connected" Link Logic) 
+async def show_ussd_and_prompt_save(update: Update, ussd_code: str):
+    uid = update.effective_user.id
+    # Use the make_ussd_link here!
+    dial_link = make_ussd_link(ussd_code)
     
+    await update.message.reply_text(
+        f"Your USSD Code is: `{ussd_code}`\n\n"
+        f"📲 [Click here to Dial]({dial_link})",
+        parse_mode="Markdown"
+    )
+    
+    keyboard = [["Yes, Save Beneficiary", "No, thanks"]]
+    await update.message.reply_text("Would you like to save this person for future shortcuts?", 
+                                   reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
+    return CONFIRM_SAVE   
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message when the command /start is issued."""
@@ -310,6 +358,7 @@ async def recipient_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
+    user_sessions.set(user_id, "phone", phone) # Save phone to session for saving later
     bank = user_sessions.get(user_id, "bank")
     amount = user_sessions.get(user_id, "amount")
     
@@ -318,15 +367,9 @@ async def recipient_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     ussd_code = AirtimePurchase(bank, amount, phone)
-    user_sessions.clear(user_id)
+    # This triggers the clickable link and the "Save?" prompt
+    return await show_ussd_and_prompt_save(update, ussd_code)
     
-    await update.message.reply_text(
-
-        f"```\n{ussd_code}\n```\n"
-        f"Copy and dial this code on your phone.",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
 
 async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start the money transfer conversation."""
@@ -416,12 +459,8 @@ async def account_number_received(update: Update, context: ContextTypes.DEFAULT_
 async def transfer_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate and display USSD code for transfer."""
     user_id = update.effective_user.id
-    
-    bank = user_sessions.get(user_id, "transfer_bank")
-    transfer_type = user_sessions.get(user_id, "transfer_type")
-    account = user_sessions.get(user_id, "account_number")
-    amount = update.message.text.strip()
-    
+    amount: str = update.message.text.strip()
+
     # Validate amount
     if not amount.isdigit():
         await update.message.reply_text(
@@ -429,23 +468,38 @@ async def transfer_amount_received(update: Update, context: ContextTypes.DEFAULT
             "Try again with /transfer"
         )
         return ConversationHandler.END
-    
-    # Generate USSD code
+
+    bank = user_sessions.get(user_id, "transfer_bank")
+    transfer_type = user_sessions.get(user_id, "transfer_type")
+    account = user_sessions.get(user_id, "account_number")
+    user_sessions.set(user_id, "amount", amount)
+
     ussd_code = MoneyTransfer(bank, account, amount, transfer_type)
-    user_sessions.clear(user_id)
+    # This triggers the clickable link and the "Save?" prompt
+    return await show_ussd_and_prompt_save(update, ussd_code)
     
-    await update.message.reply_text(
-      
-        f"```\n{ussd_code}\n```\n"
-        f"Copy and dial this code on your phone.",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular messages with the LangChain chatbot."""
-    user_message = update.message.text
+    user_message = update.message.text.lower()
+    user_id = update.effective_user.id
     print(f"📩 User message: {user_message}")
+
+    # Check if they are talking about a saved beneficiary first
+    beneficiaries = beneficiary_mgr.get_user_list(user_id)
+    for name, data in beneficiaries.items():
+        if name in user_message:
+            # If they mention a name + "send" or "transfer"
+            if any(word in user_message for word in ["send", "transfer", "pay"]):
+                ussd = MoneyTransfer(data['bank'], data['account_number'], "AMOUNT", data['transfer_type'])
+                await update.message.reply_text(
+                    f"🎯 Found **{name.capitalize()}**!\n"
+                    f"To transfer, use this code (replace AMOUNT with your value):\n"
+                    f"`{ussd}`\n\n"
+                    f"📲 [Tap to Dial]({make_ussd_link(ussd)})",
+                    parse_mode="Markdown"
+                )
+                return # Stop here! We found a match.
     
     # Check for banking intents
     if re.search(r'\b(airtime|credit|data|top.up|recharge)\b', user_message.lower()):
@@ -494,6 +548,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "For now, my AI features are temporarily unavailable."
         )
 
+async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "yes" in update.message.text.lower():
+        await update.message.reply_text("What name should I save this as? (e.g., Lekan)", reply_markup=ReplyKeyboardRemove())
+        return GET_BENEFICIARY_NAME
+    await update.message.reply_text("Transaction finished!", reply_markup=ReplyKeyboardRemove())
+    user_sessions.clear(update.effective_user.id)
+    return ConversationHandler.END
+
+async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.message.text.strip()
+    data = {
+        "bank": user_sessions.get(uid, "bank") or user_sessions.get(uid, "transfer_bank"),
+        "account_number": user_sessions.get(uid, "account_number"),
+        "phone": user_sessions.get(uid, "phone"),
+        "transfer_type": user_sessions.get(uid, "transfer_type", "other_bank")
+    }
+    beneficiary_mgr.save(uid, name, data)
+    await update.message.reply_text(f"✅ {name} saved! You can now say 'Send money to {name}'")
+    user_sessions.clear(uid)
+    return ConversationHandler.END
+
+
 def main():
     """Start the bot."""
     # Load environment variables
@@ -520,6 +597,9 @@ def main():
             AMOUNT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, amount_received)],
             RECIPIENT_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recipient_choice)],
             RECIPIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recipient_phone)],
+            # ADD THESE:
+            CONFIRM_SAVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_decision)],
+            GET_BENEFICIARY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_name)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
