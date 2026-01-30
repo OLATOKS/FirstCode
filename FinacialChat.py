@@ -41,7 +41,8 @@ CONFIRM_SAVE, GET_BENEFICIARY_NAME, SHORTCUT_AMOUNT = range(10)
 # CLICKABLE LINK HELPER ---
 def make_ussd_link(ussd):
     """Formats USSD as a clickable phone link"""
-    return f"tel:{ussd}"
+    safe_ussd = ussd.replace("#", "%23")
+    return f"tel:{safe_ussd}"
 
 # BENEFICIARY STORAGE 
 class BeneficiaryManager:
@@ -489,17 +490,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     beneficiaries = beneficiary_mgr.get_user_list(user_id)
     for name, data in beneficiaries.items():
         if name in user_message:
-            # If they mention a name + "send" or "transfer"
-            if any(word in user_message for word in ["send", "transfer", "pay"]):
-                ussd = MoneyTransfer(data['bank'], data['account_number'], "AMOUNT", data['transfer_type'])
+            # Check intent
+            if any(word in user_message for word in ["send", "transfer", "pay", "airtime", "credit"]):
+                # Save the beneficiary data to the session temporarily
+                user_sessions.set(user_id, "active_shortcut", data)
                 await update.message.reply_text(
                     f"🎯 Found **{name.capitalize()}**!\n"
-                    f"To transfer, use this code (replace AMOUNT with your value):\n"
-                    f"`{ussd}`\n\n"
-                    f"📲 [Tap to Dial]({make_ussd_link(ussd)})",
+                    "How much would you like to send/buy? (Enter numbers only)",
                     parse_mode="Markdown"
                 )
-                return # Stop here! We found a match.
+                return SHORTCUT_AMOUNT # This sends them to the new amount collector
     
     # Check for banking intents
     if re.search(r'\b(airtime|credit|data|top.up|recharge)\b', user_message.lower()):
@@ -558,18 +558,53 @@ async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    name = update.message.text.strip()
-    data = {
-        "bank": user_sessions.get(uid, "bank") or user_sessions.get(uid, "transfer_bank"),
-        "account_number": user_sessions.get(uid, "account_number"),
-        "phone": user_sessions.get(uid, "phone"),
-        "transfer_type": user_sessions.get(uid, "transfer_type", "other_bank")
-    }
+    name = update.message.text.strip().lower()
+
+    #Check what flow we were just in to decide what data to save
+    is_airtime = user_sessions.get(uid, "bank") is not None
+
+    if is_airtime:
+        data = {
+            "type": "airtime",
+            "bank": user_sessions.get(uid, "bank"),
+            "phone": user_sessions.get(uid, "phone")
+        }
+    else:
+        data = {
+            "type": "transfer",
+            "bank": user_sessions.get(uid, "transfer_bank"),
+            "account_number": user_sessions.get(uid, "account_number"),
+            "transfer_type": user_sessions.get(uid, "transfer_type")
+        }
+    
     beneficiary_mgr.save(uid, name, data)
-    await update.message.reply_text(f"✅ {name} saved! You can now say 'Send money to {name}'")
+    await update.message.reply_text(f"✅ {name.capitalize()} saved! You can now say 'Transfer to {name}' or 'Buy airtime for {name}'")
     user_sessions.clear(uid)
     return ConversationHandler.END
+ 
+async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    amount = update.message.text.strip()
+    
+    if not amount.isdigit():
+        await update.message.reply_text("Please enter a valid amount.")
+        return SHORTCUT_AMOUNT
 
+    # Retrieve the saved person we are currently dealing with
+    data = user_sessions.get(uid, "active_shortcut")
+    
+    if data['type'] == 'airtime':
+        ussd = AirtimePurchase(data['bank'], amount, data['phone'])
+    else:
+        ussd = MoneyTransfer(data['bank'], data['account_number'], amount, data['transfer_type'])
+    
+    dial_link = make_ussd_link(ussd)
+    await update.message.reply_text(
+        f"USSD Generated:\n`{ussd}`\n\n📲 [Tap to Dial]({dial_link})",
+        parse_mode="Markdown"
+    )
+    user_sessions.clear(uid)
+    return ConversationHandler.END
 
 def main():
     """Start the bot."""
@@ -612,17 +647,39 @@ def main():
             TRANSFER_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_type_selected)],
             ACCOUNT_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, account_number_received)],
             TRANSFER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_amount_received)],
+            # These MUST be here for transfers to save beneficiaries too!
+            CONFIRM_SAVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_decision)],
+            GET_BENEFICIARY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_name)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
+
+    shortcut_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        states={
+            SHORTCUT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_amount_received)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
+    )
+   
+    
+    # IMPORTANT: Replace application.add_handler(MessageHandler(...handle_message)) with:
+    application.add_handler(shortcut_handler)
     
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel))
+
+
     application.add_handler(airtime_conv_handler)
     application.add_handler(transfer_conv_handler)
-    
+
+
+    application.add_handler(shortcut_handler)
+
+
     # Add message handler for regular messages (MUST BE LAST)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
