@@ -73,6 +73,17 @@ class BeneficiaryManager:
 
     def get_user_list(self, user_id):
         return self.load_all().get(str(user_id), {})
+    
+    def delete(self, user_id, name):
+        all_data = self.load_all()
+        u_id = str(user_id)
+        name = name.lower()
+        if u_id in all_data and name in all_data[u_id]:
+            del all_data[u_id][name]
+            with open(self.filename, 'w') as f:
+                json.dump(all_data, f, indent=4)
+            return True
+        return False
 
 beneficiary_mgr = BeneficiaryManager()
 
@@ -612,6 +623,15 @@ async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     amount = update.message.text.strip()
+
+    if not amount.isdigit():
+        await update.message.reply_text(
+            "⚠️ **Numbers only, please!**\n"
+            "I can't process words as an amount. How much would you like to send? (e.g., 2000)",
+            parse_mode="Markdown"
+        )
+        return SHORTCUT_AMOUNT # Keep them in this state until they give a number
+
     data = user_sessions.get(uid, "active_shortcut")
     s_type = user_sessions.get(uid, "shortcut_type") # This is key!
     
@@ -630,6 +650,34 @@ async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT
     user_sessions.clear(uid)
     return ConversationHandler.END
 
+async def manage_beneficiaries(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    beneficiaries = beneficiary_mgr.get_user_list(uid)
+    
+    if not beneficiaries:
+        await update.message.reply_text("You don't have any saved beneficiaries yet.")
+        return
+
+    message = "📋 **Your Saved Beneficiaries:**\n\n"
+    for name, services in beneficiaries.items():
+        details = []
+        if services.get("airtime"): details.append("📱 Airtime")
+        if services.get("transfer"): details.append("💰 Transfer")
+        message += f"• **{name.capitalize()}** ({', '.join(details)})\n"
+    
+    message += "\nTo delete someone, type: `delete [name]` (e.g., `delete babe`)"
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text.lower()
+    if user_message.startswith("delete "):
+        name_to_delete = user_message.replace("delete ", "").strip()
+        uid = update.effective_user.id
+        
+        if beneficiary_mgr.delete(uid, name_to_delete):
+            await update.message.reply_text(f"🗑️ Deleted **{name_to_delete.capitalize()}** from your list.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❓ I couldn't find anyone named '{name_to_delete}'")
 
 def main():
     """Start the bot."""
@@ -698,6 +746,8 @@ def main():
     application.add_handler(airtime_conv_handler) # High priority
     application.add_handler(transfer_conv_handler) # High priority
     application.add_handler(shortcut_handler)      # Medium priority (handles AI + Shortcuts)
+    application.add_handler(CommandHandler("manage", manage_beneficiaries)) # Add a message handler specifically for the 'delete' keyword
+    application.add_handler(MessageHandler(filters.Regex(r'^delete\s.+'), handle_delete))
     application.add_handler(CommandHandler("cancel", cancel))
 
 
