@@ -227,6 +227,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /airtime - Buy airtime
     /transfer - Transfer money
     /help - Show this help message
+    /manage - View or delete saved people 
     /cancel - Cancel current operation
     
     Just type your banking questions directly!
@@ -249,12 +250,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     3. For Banking Questions:
        - Just type your question directly!
     
+    4. To see list of beneficaries and also delete from list
+       - type /manage 
+    
     Commands:
     /start - Start the bot
     /airtime - Buy airtime
     /transfer - Send money
     /cancel - Cancel current operation
     /help - Show this message
+    /manage - to show list of benefiacry 
     """
     await update.message.reply_text(help_text)
 
@@ -265,6 +270,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Operation cancelled. You can start over with /airtime or /transfer."
     )
+    await send_ready_prompt(update)
     return ConversationHandler.END
 
 async def airtime_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -600,6 +606,7 @@ async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     name = update.message.text.strip().lower()
+    
 
     # Determine what we are saving right now
     if user_sessions.get(uid, "bank") and user_sessions.get(uid, "phone"):
@@ -616,7 +623,14 @@ async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "transfer_type": user_sessions.get(uid, "transfer_type")
         }
     beneficiary_mgr.save(uid, name, service_type, data)
-    await update.message.reply_text(f"✅ {name.capitalize()} saved for {service_type}!")
+    
+    await update.message.reply_text(
+        f"✅ **{name.capitalize()} saved!**\n\n"
+        f"You can now say 'Transfer to {name}' anytime.\n"
+        f"💡 *Tip: Type /manage to see your list or delete names.*",
+        parse_mode="Markdown"
+    )
+    await send_ready_prompt(update)
     user_sessions.clear(uid)
     return ConversationHandler.END
  
@@ -678,6 +692,17 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🗑️ Deleted **{name_to_delete.capitalize()}** from your list.", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"❓ I couldn't find anyone named '{name_to_delete}'")
+
+async def send_ready_prompt(update: Update):
+    """Call this whenever a transaction or cancel ends."""
+    text = (
+        "✅ **Task complete.**\n\n"
+        "How can I help you next?\n"
+        "• Type a question (e.g., 'What is a BVN?')\n"
+        "• Use a shortcut (e.g., 'Transfer to Bro')\n"
+        "• Use a command: /airtime, /transfer, or /manage"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 def main():
     """Start the bot."""
