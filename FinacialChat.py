@@ -51,11 +51,18 @@ class BeneficiaryManager:
         if not os.path.exists(self.filename):
             with open(self.filename, 'w') as f: json.dump({}, f)
 
-    def save(self, user_id, name, data):
+    def save(self, user_id, name,service_type, data):
         all_data = self.load_all()
         u_id = str(user_id)
-        if u_id not in all_data: all_data[u_id] = {}
-        all_data[u_id][name.lower()] = data
+        name = name.lower()
+
+        if u_id not in all_data: 
+            all_data[u_id] = {}
+        if name not in all_data[u_id]:
+            all_data[u_id][name] = {"airtime": None, "transfer": None}
+
+        all_data[u_id][name][service_type] = data
+
         with open(self.filename, 'w') as f:
             json.dump(all_data, f, indent=4)
 
@@ -493,21 +500,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"📩 User message: {user_message}")
 
+    is_airtime_request = any(word in user_message for word in ["airtime", "credit", "top up", "recharge"])
+    is_transfer_request = any(word in user_message for word in ["transfer", "send", "pay", "wire"])
+
     if user_message.startswith('/'):
         return
     
     # Check if they are talking about a saved beneficiary first
     beneficiaries = beneficiary_mgr.get_user_list(user_id)
-    for name, data in beneficiaries.items():
+    for name, services in beneficiaries.items():
         if name in user_message:
-            if any(word in user_message for word in ["send", "transfer", "pay", "airtime", "credit", "buy"]):
-                user_sessions.set(user_id, "active_shortcut", data)
-                await update.message.reply_text(
-                    f"🎯 Found **{name.capitalize()}**!\n"
-                    "How much would you like to send/buy? (Enter numbers only)",
-                    parse_mode="Markdown"
-                )
-                return SHORTCUT_AMOUNT # This sends them to the new amount collector
+            if is_airtime_request:
+                if services.get("airtime"):
+                    user_sessions.set(user_id, "active_shortcut", services["airtime"])
+                    user_sessions.set(user_id, "shortcut_type", "airtime") # Track intent!
+                    await update.message.reply_text(f"🎯 Airtime for **{name.capitalize()}**! Amount?")
+                    return SHORTCUT_AMOUNT
+                else:
+                    await update.message.reply_text(f"I have {name.capitalize()}'s transfer info, but no phone number for airtime.")
+                    return ConversationHandler.END
+
+            elif is_transfer_request:
+                if services.get("transfer"):
+                    user_sessions.set(user_id, "active_shortcut", services["transfer"])
+                    user_sessions.set(user_id, "shortcut_type", "transfer") # Track intent!
+                    await update.message.reply_text(f"🎯 Transfer to **{name.capitalize()}**! Amount?")
+                    return SHORTCUT_AMOUNT
+                else:
+                    await update.message.reply_text(f"I have {name.capitalize()}'s phone number, but no bank details for a transfer.")
+                    return ConversationHandler.END
     
     # Check for banking intents
     if re.search(r'\b(airtime|credit|data|top.up|recharge)\b', user_message.lower()):
@@ -568,40 +589,32 @@ async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     name = update.message.text.strip().lower()
 
-    #Check what flow we were just in to decide what data to save
-    is_airtime = user_sessions.get(uid, "bank") is not None
-
-    if is_airtime:
+    # Determine what we are saving right now
+    if user_sessions.get(uid, "bank") and user_sessions.get(uid, "phone"):
+        service_type = "airtime"
         data = {
-            "type": "airtime",
             "bank": user_sessions.get(uid, "bank"),
             "phone": user_sessions.get(uid, "phone")
         }
     else:
+        service_type = "transfer"
         data = {
-            "type": "transfer",
             "bank": user_sessions.get(uid, "transfer_bank"),
             "account_number": user_sessions.get(uid, "account_number"),
             "transfer_type": user_sessions.get(uid, "transfer_type")
         }
-    
-    beneficiary_mgr.save(uid, name, data)
-    await update.message.reply_text(f"✅ {name.capitalize()} saved! You can now say 'Transfer to {name}' or 'Buy airtime for {name}'")
+    beneficiary_mgr.save(uid, name, service_type, data)
+    await update.message.reply_text(f"✅ {name.capitalize()} saved for {service_type}!")
     user_sessions.clear(uid)
     return ConversationHandler.END
  
 async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     amount = update.message.text.strip()
-    
-    if not amount.isdigit():
-        await update.message.reply_text("Please enter a valid amount.")
-        return SHORTCUT_AMOUNT
-
-    # Retrieve the saved person we are currently dealing with
     data = user_sessions.get(uid, "active_shortcut")
+    s_type = user_sessions.get(uid, "shortcut_type") # This is key!
     
-    if data['type'] == 'airtime':
+    if s_type == 'airtime':
         ussd = AirtimePurchase(data['bank'], amount, data['phone'])
     else:
         ussd = MoneyTransfer(data['bank'], data['account_number'], amount, data['transfer_type'])
@@ -613,6 +626,7 @@ async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT
     )
     user_sessions.clear(uid)
     return ConversationHandler.END
+
 
 def main():
     """Start the bot."""
