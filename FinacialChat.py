@@ -191,7 +191,8 @@ async def show_ussd_and_prompt_save(update: Update, ussd_code: str):
     dial_link = make_ussd_link(ussd_code)
     
     await update.message.reply_text(
-        f"Your USSD Code is: `{ussd_code}`\n\n"
+        f"Your USSD Code is:"
+        f"`{ussd_code}`\n\n"
         f"📲 [Click here to Dial]({dial_link})",
         parse_mode="Markdown"
     )
@@ -621,7 +622,9 @@ async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT
     
     dial_link = make_ussd_link(ussd)
     await update.message.reply_text(
-        f"USSD Generated:\n`{ussd}`\n\n📲 [Tap to Dial]({dial_link})",
+        f"✅ **USSD Ready!**\n\n"
+        f"Tap to copy:\n`{ussd}`\n\n"
+        f"📲 [Attempt to Dial]({dial_link})",
         parse_mode="Markdown"
     )
     user_sessions.clear(uid)
