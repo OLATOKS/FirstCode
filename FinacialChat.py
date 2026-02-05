@@ -143,15 +143,18 @@ def setup_chatbot() -> Optional[LLMChain]:
         
         prompt = PromptTemplate(
             input_variables=["history", "input"],
-            template="""You are a helpful banking assistant for Nigerian banks. 
-            Help users with banking questions about airtime purchases, money transfers, 
-            account management, and general banking inquiries.
-            
-            Keep responses clear, concise, and helpful.
-            
+            template="""You are a banking assistant. 
+            IMPORTANT: Do NOT give USSD codes or step-by-step transfer instructions. 
+            bot handles transactions via /airtime and /transfer.
+    
+            If the user asks to send money or buy airtime, simply tell them:
+            "I can help with that! Please use /transfer or /airtime to begin."
+    
+            Only answer general questions like "What is a BVN?" or "How do I keep my account safe?"
+    
             Chat history:
             {history}
-            
+    
             Human: {input}
             AI: """
         )
@@ -263,21 +266,25 @@ async def airtime_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bank_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Store selected bank and ask for amount."""
     user_id = update.effective_user.id
-    bank = update.message.text.lower().replace(" ", "")
+    bank = update.message.text.lower().replace(" ", "").replace("bank", "")
     
     # Map display names to keys
     bank_mapping = {
+        "gt": "gtbank",
+        "gtb": "gtbank",
         "gtbank": "gtbank",
-        "accessbank": "access",
-        "zenithbank": "zenith",
+        "access": "access",
+        "zenith": "zenith",
         "uba": "uba",
+        "first": "firstbank",
         "firstbank": "firstbank"
     }
     
     bank_key = bank_mapping.get(bank)
     if not bank_key:
-        await update.message.reply_text("Invalid bank selection. Please try again with /airtime")
-        return ConversationHandler.END
+        await update.message.reply_text("I didn't recognize that bank. Please tap one of the buttons below.")
+        return BANK_SELECTION
+    
     
     user_sessions.set(user_id, "bank", bank_key)
     await update.message.reply_text(
@@ -486,6 +493,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"📩 User message: {user_message}")
 
+    if user_message.startswith('/'):
+        return
+    
     # Check if they are talking about a saved beneficiary first
     beneficiaries = beneficiary_mgr.get_user_list(user_id)
     for name, data in beneficiaries.items():
@@ -661,27 +671,21 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', cancel)],
         allow_reentry=True
+
     )
    
     
-    # IMPORTANT: Replace application.add_handler(MessageHandler(...handle_message)) with:
-    application.add_handler(shortcut_handler)
+    
     
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(airtime_conv_handler) # High priority
+    application.add_handler(transfer_conv_handler) # High priority
+    application.add_handler(shortcut_handler)      # Medium priority (handles AI + Shortcuts)
     application.add_handler(CommandHandler("cancel", cancel))
 
 
-    application.add_handler(airtime_conv_handler)
-    application.add_handler(transfer_conv_handler)
-
-
-    application.add_handler(shortcut_handler)
-
-
-    # Add message handler for regular messages (MUST BE LAST)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Start the bot
     print("🤖 Banking Assistant Bot is starting...")
