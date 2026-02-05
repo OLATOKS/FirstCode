@@ -500,9 +500,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     beneficiaries = beneficiary_mgr.get_user_list(user_id)
     for name, data in beneficiaries.items():
         if name in user_message:
-            # Check intent
-            if any(word in user_message for word in ["send", "transfer", "pay", "airtime", "credit"]):
-                # Save the beneficiary data to the session temporarily
+            if any(word in user_message for word in ["send", "transfer", "pay", "airtime", "credit", "buy"]):
                 user_sessions.set(user_id, "active_shortcut", data)
                 await update.message.reply_text(
                     f"🎯 Found **{name.capitalize()}**!\n"
@@ -517,14 +515,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💳 It looks like you want to buy airtime!\n\n"
             "Use /airtime to start the purchase process."
         )
-        return
+        return ConversationHandler.END
     
     if re.search(r'\b(transfer|send.money|wire|send.funds)\b', user_message.lower()):
         await update.message.reply_text(
             "💰 It looks like you want to transfer money!\n\n"
             "Use /transfer to start the transfer process."
         )
-        return
+        return ConversationHandler.END
     
     # Check if chatbot is available
     if not chatbot_chain:
@@ -670,7 +668,7 @@ def main():
             SHORTCUT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_amount_received)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=True
+        allow_reentry=False
 
     )
    
