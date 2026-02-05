@@ -770,10 +770,11 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(airtime_conv_handler) # High priority
     application.add_handler(transfer_conv_handler) # High priority
-    application.add_handler(shortcut_handler)      # Medium priority (handles AI + Shortcuts)
-    application.add_handler(CommandHandler("manage", manage_beneficiaries)) # Add a message handler specifically for the 'delete' keyword
     application.add_handler(MessageHandler(filters.Regex(r'^delete\s.+'), handle_delete))
     application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(shortcut_handler)      # Medium priority (handles AI + Shortcuts)
+    application.add_handler(CommandHandler("manage", manage_beneficiaries)) # Add a message handler specifically for the 'delete' keyword
+    
 
 
     
