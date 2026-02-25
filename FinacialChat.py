@@ -7,16 +7,29 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup,ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
+from logging.handlers import RotatingFileHandler
 
-# Set up logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+# Set up a formatter to make the logs easy to read
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Create a rotating file handler (keeps the file from getting too big)
+file_handler = RotatingFileHandler(
+    'bot_activity.log', maxBytes=5 * 1024 * 1024, backupCount=2 # Max 5MB per file, keep 2 backups
 )
+file_handler.setFormatter(log_formatter)
+
+# Create a console handler so you still see it in the terminal
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+# Configure the root logger
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
 logger = logging.getLogger(__name__)
+
 
 BankUssdAirtimeCode = {
     "gtbank": "*737*",
@@ -132,7 +145,16 @@ def MoneyTransfer(bank: str, account_number: str, amount: str, destination_bank:
     else:
         return "Invalid transfer type"
 
-def setup_chatbot() -> Optional[LLMChain]:
+store = {}
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    """Returns the chat history for a specific user session."""
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    return store[session_id]
+
+
+def setup_chatbot():
     """Initialize the LangChain chatbot with error handling"""
     try:
         load_dotenv()
@@ -153,37 +175,44 @@ def setup_chatbot() -> Optional[LLMChain]:
             model="deepseek/deepseek-chat",  
             temperature=0.7,
         )
-        1
+        
         # Test the connection
         print("✅ LangChain configured. Testing connection...")
         
-        memory = ConversationBufferMemory()
-        
-        prompt = PromptTemplate(
-            input_variables=["history", "input"],
-            template="""You are a banking assistant. 
+       # new update langchain Prompt Template
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a banking assistant. 
             IMPORTANT: Do NOT give USSD codes or step-by-step transfer instructions. 
             bot handles transactions via /airtime and /transfer.
     
             If the user asks to send money or buy airtime, simply tell them:
             "I can help with that! Please use /transfer or /airtime to begin."
     
-            Only answer general questions like "What is a BVN?" or "How do I keep my account safe?"
-    
-            Chat history:
-            {history}
-    
-            Human: {input}
-            AI: """
+            Only answer general questions like "What is a BVN?" or "How do I keep my account safe?\""""),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}")
+        ])
+        
+        # Modern LCEL Chain Pipe
+        chain = prompt | llm
+
+        # the memory with the new module 
+        with_message_history = RunnableWithMessageHistory(
+            chain,
+            get_session_history,
+            input_messages_key="input",
+            history_messages_key="history",
         )
+
+        # Test the connection
+        print("Testing connection...")
+        test_response = with_message_history.invoke(
+            {"input": "Hello"},
+            config={"configurable": {"session_id": "test_session"}}
+        )
+        print(f"✅ LangChain test successful: {test_response.content[:50]}...")
         
-        chain = LLMChain(llm=llm, prompt=prompt, memory=memory, verbose=False)
-        
-        # Test with a simple message
-        test_response = chain.run(input="Hello")
-        print(f"✅ LangChain test successful: {test_response[:50]}...")
-        
-        return chain
+        return with_message_history
         
     except Exception as e:
         print(f"❌ Failed to initialize LangChain: {e}")
@@ -516,7 +545,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular messages with the LangChain chatbot."""
     user_message = update.message.text.lower()
     user_id = update.effective_user.id
-    print(f"📩 User message: {user_message}")
+    logger.info(f"📩 User message: {user_message}")
 
     is_airtime_request = any(word in user_message for word in ["airtime", "credit", "top up", "recharge"])
     is_transfer_request = any(word in user_message for word in ["transfer", "send", "pay", "wire"])
