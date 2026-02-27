@@ -325,6 +325,8 @@ async def bank_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     bank = update.message.text.lower().replace(" ", "").replace("bank", "")
     
+    print(f"🏦 User {user_id} selected bank: {bank}")
+    
     # Map display names to keys
     bank_mapping = {
         "gt": "gtbank",
@@ -835,6 +837,6 @@ def main():
     # Run the bot until Ctrl+C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    
+
 if __name__ == '__main__':
     main()
