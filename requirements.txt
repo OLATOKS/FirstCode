@@ -2,3 +2,5 @@ python-telegram-bot
 python-dotenv
 openai
 langchain-openai
+langchain-community
+requests

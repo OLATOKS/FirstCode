@@ -12,6 +12,9 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from logging.handlers import RotatingFileHandler
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Set up a formatter to make the logs easy to read
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -813,6 +816,24 @@ def main():
     
     # Run the bot until Ctrl+C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # --- RENDER WEB SERVER START ---
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Healthy!")
+
+def run_health_server():
+    # Render provides the port in an environment variable called 'PORT'
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# Start the web server in a background thread
+threading.Thread(target=run_health_server, daemon=True).start()
+# --- RENDER WEB SERVER END ---
 
 if __name__ == '__main__':
     main()
