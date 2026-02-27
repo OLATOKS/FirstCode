@@ -750,6 +750,24 @@ def main():
         
         return
     
+      # --- RENDER WEB SERVER START ---
+
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is Healthy!")
+
+    def run_health_server():
+    # Render provides the port in an environment variable called 'PORT'
+        port = int(os.environ.get("PORT", 10000))
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        server.serve_forever()
+
+    # Start the web server in a background thread
+    threading.Thread(target=run_health_server, daemon=True).start()
+    # render ends here 
+    
     # Create the Application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -817,23 +835,6 @@ def main():
     # Run the bot until Ctrl+C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    # --- RENDER WEB SERVER START ---
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is Healthy!")
-
-def run_health_server():
-    # Render provides the port in an environment variable called 'PORT'
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
-
-# Start the web server in a background thread
-threading.Thread(target=run_health_server, daemon=True).start()
-# --- RENDER WEB SERVER END ---
-
+    
 if __name__ == '__main__':
     main()
