@@ -607,18 +607,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Need help? Type /help"
         )
         return
-    
+   
     # Use LangChain for general banking questions
     try:
         print("🤖 Processing with LangChain...")
-        response = chatbot_chain.run(input=user_message)
-        print(f"✅ Response generated: {response[:100]}...")
-        await update.message.reply_text(response)
-        
+
+        # Use .invoke() and pass the user's ID so it remembers their specific conversation
+        response = chatbot_chain.invoke(
+            {"input": user_message},
+            config={"configurable": {"session_id": str(user_id)}}
+        )
+
+        # Extract the text from the AI
+        bot_reply = response.content
+
+        # Log the response so you can see it on Render
+        logger.info(f"🤖 Bot response: {bot_reply}")
+
+        # Send it back to the Telegram user
+        await update.message.reply_text(bot_reply)
+
     except Exception as e:
         logger.error(f"Error in chatbot: {e}")
         print(f"❌ LangChain error details: {e}")
-        
+
         # Fallback response
         await update.message.reply_text(
             "🤖 Banking Assistant\n\n"
@@ -628,7 +640,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 📋 Banking information - try these commands\n\n"
             "For now, my AI features are temporarily unavailable."
         )
-
+        # Use LangChain for general banking questions
+    
 async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "yes" in update.message.text.lower():
         await update.message.reply_text("What name should I save this as? (e.g., Lekan)", reply_markup=ReplyKeyboardRemove())
