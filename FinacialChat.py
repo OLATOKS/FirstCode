@@ -640,7 +640,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 📋 Banking information - try these commands\n\n"
             "For now, my AI features are temporarily unavailable."
         )
-        # Use LangChain for general banking questions
+       
     
 async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "yes" in update.message.text.lower():
