@@ -60,6 +60,200 @@ def make_ussd_link(ussd):
     safe_ussd = ussd.replace("#", "%23")
     return f"tel:{safe_ussd}"
 
+def parse_amount(text):
+    text = text.lower().replace("naira", "").replace(",", "").strip()
+    if text.endswith("k"):
+        return str(int(float(text[:-1]) * 1000))
+    return text if text.isdigit() else None
+
+def extract_amount_string(text):
+    match = re.search(r'\b(\d+(?:\.\d+)?k|\d[\d,]*)\b', text.lower())
+    return match.group(1) if match else None
+
+def extract_phone(text):
+    match = re.search(r'0[7-9][0-1]\d{8}', text)
+    return match.group() if match else None
+
+def detect_transfer_intent(text):
+    return bool(re.search(r'\b(send|transfer|pay|wire|send money)\b', text.lower()))
+
+def detect_airtime_intent(text):
+    return bool(re.search(r'\b(recharge|airtime|top.?up|credit)\b', text.lower()))
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Smart handler - extracts intent, amount, phone from natural language."""
+    user_message = update.message.text
+    user_id = update.effective_user.id
+
+    logger.info(f"📩 User message from {user_id}: {user_message}")
+
+    # Ignore commands
+    if user_message.startswith('/'):
+        return
+
+    # Handle "delete name" keyword first
+    if user_message.lower().startswith("delete "):
+        await handle_delete(update, context)
+        return
+
+    # --- EXTRACT EVERYTHING FROM THE MESSAGE ---
+    raw_amount = extract_amount_string(user_message)
+    amount = parse_amount(raw_amount) if raw_amount else None
+    phone = extract_phone(user_message)
+    is_transfer = detect_transfer_intent(user_message)
+    is_airtime = detect_airtime_intent(user_message)
+    text_lower = user_message.lower()
+    
+    logger.info(f"DEBUG — raw_amount: {raw_amount}, parsed: {amount}, phone: {phone}, transfer: {is_transfer}, airtime: {is_airtime}")
+
+    # --- CHECK FOR SAVED BENEFICIARY NAME IN MESSAGE ---
+    beneficiaries = beneficiary_mgr.get_user_list(user_id)
+    for name, services in beneficiaries.items():
+        if name in text_lower:
+            if is_transfer and services.get("transfer"):
+                if amount:
+                    # We have everything — generate USSD + offer to save
+                      data = services["transfer"]
+                      ussd = MoneyTransfer(data["bank"], data["account_number"], amount, data["transfer_type"])
+                      dial_link = make_ussd_link(ussd)
+                      await update.message.reply_text(
+                         f"✅ *Transfer to {name.capitalize()} — ₦{amount}*\n\n"
+                         f"Tap to copy:\n`{ussd}`\n\n"
+                         f"📲 [Tap to Dial]({dial_link})",
+                         parse_mode="Markdown"
+                       )
+                      user_sessions.clear(user_id)
+                      return ConversationHandler.END
+
+                else:
+                    # Name found but no amount — ask for it
+                    user_sessions.set(user_id, "active_shortcut", services["transfer"])
+                    user_sessions.set(user_id, "shortcut_type", "transfer")
+                    await update.message.reply_text(
+                        f"🎯 Transfer to *{name.capitalize()}*! How much?",
+                        parse_mode="Markdown"
+                    )
+                    return SHORTCUT_AMOUNT
+
+            elif is_airtime and services.get("airtime"):
+                if amount:
+                    # We have everything — generate USSD immediately
+                     data = services["airtime"]
+                     ussd = AirtimePurchase(data["bank"], amount, data["phone"])
+                     dial_link = make_ussd_link(ussd)
+                     await update.message.reply_text(
+                         f"✅ *Airtime for {name.capitalize()} — ₦{amount}*\n\n"
+                         f"Tap to copy:\n`{ussd}`\n\n"
+                         f"📲 [Tap to Dial]({dial_link})",
+                         parse_mode="Markdown"
+                       )
+                     user_sessions.clear(user_id)
+                     return ConversationHandler.END
+                else:
+                    # Name found but no amount — ask for it
+                    user_sessions.set(user_id, "active_shortcut", services["airtime"])
+                    user_sessions.set(user_id, "shortcut_type", "airtime")
+                    await update.message.reply_text(
+                        f"🎯 Airtime for *{name.capitalize()}*! How much?",
+                        parse_mode="Markdown"
+                    )
+                    return SHORTCUT_AMOUNT
+
+            else:
+                await update.message.reply_text(
+                    f"I found *{name.capitalize()}* in your contacts but they don't have "
+                    f"{'transfer' if is_transfer else 'airtime'} details saved.",
+                    parse_mode="Markdown"
+                )
+                return ConversationHandler.END
+
+    # --- TRANSFER: phone number + amount both in the message ---
+    # e.g. "send 7k to 09012345678" or "transfer 2000 to 09012345678"
+    if is_transfer and phone and amount:
+        user_sessions.set(user_id, "phone_as_account", phone)
+        user_sessions.set(user_id, "amount", amount)
+
+        # Ask only for bank since we have everything else
+        keyboard = [["GTBank", "Access Bank"], ["Zenith Bank", "UBA"], ["First Bank"]]
+        await update.message.reply_text(
+            f"💰 Sending *₦{amount}* to *{phone}*\n\nJust pick your bank:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        user_sessions.set(user_id, "pending_action", "quick_transfer")
+        return BANK_SELECTION
+
+    # --- TRANSFER: amount only, no phone ---
+    # e.g. "I want to send money" or "transfer 5000"
+    if is_transfer and amount and not phone:
+        user_sessions.set(user_id, "amount", amount)
+        await update.message.reply_text(
+            f"💰 Got it — *₦{amount}*. What's the recipient's account number?",
+            parse_mode="Markdown"
+        )
+        user_sessions.set(user_id, "pending_action", "quick_transfer")
+        return ACCOUNT_NUMBER
+
+    # --- AIRTIME: recharge self with amount ---
+    # e.g. "recharge my MTN line with 2000" or "top up 1k"
+    if is_airtime and amount:
+        user_sessions.set(user_id, "amount", amount)
+        user_sessions.set(user_id, "airtime_for_self", True)
+
+        keyboard = [["GTBank", "Access Bank"], ["Zenith Bank", "UBA"], ["First Bank"]]
+        await update.message.reply_text(
+            f"📱 Recharging *₦{amount}* on your line.\n\nWhich bank?",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        user_sessions.set(user_id, "pending_action", "quick_airtime")
+        return BANK_SELECTION
+
+    # --- AIRTIME: intent but no amount ---
+    if is_airtime and not amount:
+        await update.message.reply_text(
+            "📱 Sure! Use /airtime to buy airtime step by step."
+        )
+        return ConversationHandler.END
+
+    # --- TRANSFER: intent but no amount and no phone ---
+    if is_transfer and not amount and not phone:
+        await update.message.reply_text(
+            "💰 Sure! Use /transfer to send money step by step."
+        )
+        return ConversationHandler.END
+
+    # --- FALLBACK: Send to AI for general banking questions ---
+    if not chatbot_chain:
+        await update.message.reply_text(
+            "🤖 I can help you with:\n\n"
+            "• 💳 Buy airtime: /airtime\n"
+            "• 💰 Transfer money: /transfer\n"
+            "• 📋 View contacts: /manage\n\n"
+            "Or just say something like:\n"
+            "_'Send 5k to 08012345678'_ or _'Recharge 1000'_",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        logger.info(f"🤖 Sending to AI: {user_message}")
+        response = chatbot_chain.invoke(
+            {"input": user_message},
+            config={"configurable": {"session_id": str(user_id)}}
+        )
+        bot_reply = response.content
+        logger.info(f"🤖 AI response: {bot_reply}")
+        await update.message.reply_text(bot_reply)
+
+    except Exception as e:
+        logger.error(f"❌ AI error: {e}")
+        await update.message.reply_text(
+            "🤖 My AI is temporarily unavailable.\n\n"
+            "Use /airtime, /transfer, or /help."
+        )
+
+
 # BENEFICIARY STORAGE 
 class BeneficiaryManager:
     def __init__(self, filename="beneficiaries.json"):
@@ -321,37 +515,92 @@ async def airtime_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BANK_SELECTION
 
 async def bank_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Store selected bank and ask for amount."""
+    # Handles bank selection specifically for the quick natural language flow.
     user_id = update.effective_user.id
-    bank = update.message.text.lower().replace(" ", "").replace("bank", "")
-    
-    print(f"🏦 User {user_id} selected bank: {bank}")
-    
-    # Map display names to keys
+    bank_text = update.message.text.lower().replace(" ", "").replace("bank", "")
+
     bank_mapping = {
-        "gt": "gtbank",
-        "gtb": "gtbank",
-        "gtbank": "gtbank",
-        "access": "access",
-        "zenith": "zenith",
-        "uba": "uba",
-        "first": "firstbank",
-        "firstbank": "firstbank"
+        "gt": "gtbank", "gtb": "gtbank", "gtbank": "gtbank",
+        "access": "access", "zenith": "zenith",
+        "uba": "uba", "first": "firstbank", "firstbank": "firstbank"
     }
-    
-    bank_key = bank_mapping.get(bank)
+    bank_key = bank_mapping.get(bank_text)
+
     if not bank_key:
-        await update.message.reply_text("I didn't recognize that bank. Please tap one of the buttons below.")
+        keyboard = [["GTBank", "Access Bank"], ["Zenith Bank", "UBA"], ["First Bank"]]
+        await update.message.reply_text("I didn't recognize that bank. Please tap one of the buttons.")
         return BANK_SELECTION
+
+    pending = user_sessions.get(user_id, "pending_action")
+
+    # --- QUICK TRANSFER (from natural language flow) ---
+    if pending == "quick_transfer":
+        account = user_sessions.get(user_id, "phone_as_account")
+        amount = user_sessions.get(user_id, "amount")
+        ussd = MoneyTransfer(bank_key, account, amount, "other_bank")
+        user_sessions.set(user_id, "transfer_bank", bank_key)
+        user_sessions.set(user_id, "account_number", account)
+        user_sessions.set(user_id, "transfer_type", "other_bank")
+        return await show_ussd_and_prompt_save(update, ussd)
+
+    # --- QUICK AIRTIME (from natural language flow) ---
+    if pending == "quick_airtime":
+        amount = user_sessions.get(user_id, "amount")
+        ussd = AirtimePurchase(bank_key, amount)
+        user_sessions.set(user_id, "bank", bank_key)
+        user_sessions.set(user_id, "airtime_for_self", True)
+        return await show_ussd_and_prompt_save(update, ussd)   
     
     
+    
+    # --- NORMAL AIRTIME FLOW (from /airtime command) ---
     user_sessions.set(user_id, "bank", bank_key)
     await update.message.reply_text(
-        
         "How much airtime would you like to purchase?\n"
         "Example: 500, 1000, 2000"
     )
-    return AMOUNT_INPUT
+    return ConversationHandler.END
+
+async def quick_bank_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles bank selection specifically for the quick natural language flow."""
+    user_id = update.effective_user.id
+    bank_text = update.message.text.lower().replace(" ", "").replace("bank", "")
+
+    bank_mapping = {
+        "gt": "gtbank", "gtb": "gtbank", "gtbank": "gtbank",
+        "access": "access", "zenith": "zenith",
+        "uba": "uba", "first": "firstbank", "firstbank": "firstbank"
+    }
+    bank_key = bank_mapping.get(bank_text)
+
+    if not bank_key:
+        keyboard = [["GTBank", "Access Bank"], ["Zenith Bank", "UBA"], ["First Bank"]]
+        await update.message.reply_text(
+            "I didn't recognize that bank. Please tap one of the buttons.",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return BANK_SELECTION
+
+    pending = user_sessions.get(user_id, "pending_action")
+
+    if pending == "quick_transfer":
+        account = user_sessions.get(user_id, "phone_as_account") or user_sessions.get(user_id, "account_number")
+        amount = user_sessions.get(user_id, "amount")
+        ussd = MoneyTransfer(bank_key, account, amount, "other_bank")
+        user_sessions.set(user_id, "transfer_bank", bank_key)
+        user_sessions.set(user_id, "account_number", account)
+        user_sessions.set(user_id, "transfer_type", "other_bank")
+        return await show_ussd_and_prompt_save(update, ussd)
+
+    if pending == "quick_airtime":
+        amount = user_sessions.get(user_id, "amount")
+        ussd = AirtimePurchase(bank_key, amount)
+        user_sessions.set(user_id, "bank", bank_key)
+        user_sessions.set(user_id, "airtime_for_self", True)
+        return await show_ussd_and_prompt_save(update, ussd)
+
+    await update.message.reply_text("Something went wrong. Please try again.")
+    return ConversationHandler.END
 
 async def amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Store amount and ask who it's for."""
@@ -523,6 +772,29 @@ async def account_number_received(update: Update, context: ContextTypes.DEFAULT_
     )
     return TRANSFER_AMOUNT
 
+
+async def quick_account_number_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles account number for the quick natural language transfer flow."""
+    user_id = update.effective_user.id
+    account_number = update.message.text.strip()
+
+    if not account_number.isdigit() or len(account_number) < 10:
+        await update.message.reply_text(
+            "Invalid account number. Please enter a valid 10-digit account number."
+        )
+        return ACCOUNT_NUMBER
+
+    user_sessions.set(user_id, "account_number", account_number)
+
+    keyboard = [["GTBank", "Access Bank"], ["Zenith Bank", "UBA"], ["First Bank"]]
+    await update.message.reply_text(
+        f"Account: {account_number}\n\nNow pick your bank:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    user_sessions.set(user_id, "pending_action", "quick_transfer")
+    return BANK_SELECTION
+
+
 async def transfer_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate and display USSD code for transfer."""
     user_id = update.effective_user.id
@@ -545,101 +817,6 @@ async def transfer_amount_received(update: Update, context: ContextTypes.DEFAULT
     # This triggers the clickable link and the "Save?" prompt
     return await show_ussd_and_prompt_save(update, ussd_code)
     
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle regular messages with the LangChain chatbot."""
-    user_message = update.message.text.lower()
-    user_id = update.effective_user.id
-    logger.info(f"📩 User message: {user_message}")
-
-    is_airtime_request = any(word in user_message for word in ["airtime", "credit", "top up", "recharge"])
-    is_transfer_request = any(word in user_message for word in ["transfer", "send", "pay", "wire"])
-
-    if user_message.startswith('/'):
-        return
-    
-    # Check if they are talking about a saved beneficiary first
-    beneficiaries = beneficiary_mgr.get_user_list(user_id)
-    for name, services in beneficiaries.items():
-        if name in user_message:
-            if is_airtime_request:
-                if services.get("airtime"):
-                    user_sessions.set(user_id, "active_shortcut", services["airtime"])
-                    user_sessions.set(user_id, "shortcut_type", "airtime") # Track intent!
-                    await update.message.reply_text(f"🎯 Airtime for **{name.capitalize()}**! Amount?")
-                    return SHORTCUT_AMOUNT
-                else:
-                    await update.message.reply_text(f"I have {name.capitalize()}'s transfer info, but no phone number for airtime.")
-                    return ConversationHandler.END
-
-            elif is_transfer_request:
-                if services.get("transfer"):
-                    user_sessions.set(user_id, "active_shortcut", services["transfer"])
-                    user_sessions.set(user_id, "shortcut_type", "transfer") # Track intent!
-                    await update.message.reply_text(f"🎯 Transfer to **{name.capitalize()}**! Amount?")
-                    return SHORTCUT_AMOUNT
-                else:
-                    await update.message.reply_text(f"I have {name.capitalize()}'s phone number, but no bank details for a transfer.")
-                    return ConversationHandler.END
-    
-    # Check for banking intents
-    if re.search(r'\b(airtime|credit|data|top.up|recharge)\b', user_message.lower()):
-        await update.message.reply_text(
-            "💳 It looks like you want to buy airtime!\n\n"
-            "Use /airtime to start the purchase process."
-        )
-        return ConversationHandler.END
-    
-    if re.search(r'\b(transfer|send.money|wire|send.funds)\b', user_message.lower()):
-        await update.message.reply_text(
-            "💰 It looks like you want to transfer money!\n\n"
-            "Use /transfer to start the transfer process."
-        )
-        return ConversationHandler.END
-    
-    # Check if chatbot is available
-    if not chatbot_chain:
-        await update.message.reply_text(
-            "🤖 I can help you with banking services!\n\n"
-            "• Buy airtime: /airtime\n"
-            "• Transfer money: /transfer\n"
-            "• For banking questions, I'm currently limited to commands.\n"
-            "Need help? Type /help"
-        )
-        return
-   
-    # Use LangChain for general banking questions
-    try:
-        print("🤖 Processing with LangChain...")
-
-        # Use .invoke() and pass the user's ID so it remembers their specific conversation
-        response = chatbot_chain.invoke(
-            {"input": user_message},
-            config={"configurable": {"session_id": str(user_id)}}
-        )
-
-        # Extract the text from the AI
-        bot_reply = response.content
-
-        # Log the response so you can see it on Render
-        logger.info(f"🤖 Bot response: {bot_reply}")
-
-        # Send it back to the Telegram user
-        await update.message.reply_text(bot_reply)
-
-    except Exception as e:
-        logger.error(f"Error in chatbot: {e}")
-        print(f"❌ LangChain error details: {e}")
-
-        # Fallback response
-        await update.message.reply_text(
-            "🤖 Banking Assistant\n\n"
-            "I can help you with:\n"
-            "• 💳 Buying airtime - type /airtime\n"
-            "• 💰 Transferring money - type /transfer\n"
-            "• 📋 Banking information - try these commands\n\n"
-            "For now, my AI features are temporarily unavailable."
-        )
        
     
 async def handle_save_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -656,19 +833,25 @@ async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
 
     # Determine what we are saving right now
-    if user_sessions.get(uid, "bank") and user_sessions.get(uid, "phone"):
-        service_type = "airtime"
-        data = {
-            "bank": user_sessions.get(uid, "bank"),
-            "phone": user_sessions.get(uid, "phone")
-        }
+    if user_sessions.get(uid, "airtime_for_self"):
+         service_type = "airtime"
+         data = {
+             "bank": user_sessions.get(uid, "bank"),
+             "phone": None
+             }
+    elif user_sessions.get(uid, "bank") and user_sessions.get(uid, "phone"):
+         service_type = "airtime"
+         data = {
+             "bank": user_sessions.get(uid, "bank"),
+             "phone": user_sessions.get(uid, "phone")
+             }
     else:
-        service_type = "transfer"
-        data = {
-            "bank": user_sessions.get(uid, "transfer_bank"),
-            "account_number": user_sessions.get(uid, "account_number"),
-            "transfer_type": user_sessions.get(uid, "transfer_type")
-        }
+         service_type = "transfer"
+         data = {
+             "bank": user_sessions.get(uid, "transfer_bank"),
+             "account_number": user_sessions.get(uid, "account_number"),
+             "transfer_type": user_sessions.get(uid, "transfer_type")
+             }
     beneficiary_mgr.save(uid, name, service_type, data)
     
     await update.message.reply_text(
@@ -684,8 +867,9 @@ async def handle_save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     amount = update.message.text.strip()
-
-    if not amount.isdigit():
+     
+    parsed = parse_amount(amount)
+    if not parsed:
         await update.message.reply_text(
             "⚠️ **Numbers only, please!**\n"
             "I can't process words as an amount. How much would you like to send? (e.g., 2000)",
@@ -697,10 +881,10 @@ async def shortcut_amount_received(update: Update, context: ContextTypes.DEFAULT
     s_type = user_sessions.get(uid, "shortcut_type") # This is key!
     
     if s_type == 'airtime':
-        ussd = AirtimePurchase(data['bank'], amount, data['phone'])
+         ussd = AirtimePurchase(data['bank'], parsed, data['phone'])
     else:
-        ussd = MoneyTransfer(data['bank'], data['account_number'], amount, data['transfer_type'])
-    
+         ussd = MoneyTransfer(data['bank'], data['account_number'], parsed, data['transfer_type'])
+
     dial_link = make_ussd_link(ussd)
     await update.message.reply_text(
         f"✅ **USSD Ready!**\n\n"
@@ -818,14 +1002,17 @@ def main():
     )
 
     shortcut_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
-        states={
-            SHORTCUT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_amount_received)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=False
-
-    )
+    entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+    states={
+        SHORTCUT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_amount_received)],
+        BANK_SELECTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_bank_selected)],
+        ACCOUNT_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_account_number_received)],
+        CONFIRM_SAVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_decision)],
+        GET_BENEFICIARY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_name)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+    allow_reentry=False
+)
    
     
     
